@@ -6,6 +6,10 @@ import unicodedata
 
 from pathlib import Path
 from datetime import datetime
+from connection_manager import ConnectionManager
+
+connection_manager = ConnectionManager()
+
 
 
 # ============================================================
@@ -16,9 +20,7 @@ HOST = "0.0.0.0"
 PORTA = 6502
 
 # Caminho do arquivo gerado pelo sistema
-ARQUIVO_PRODUTOS = Path(
-    r"C:\tcserver\Produto.txt"
-)
+ARQUIVO_PRODUTOS = Path(__file__).parent / "Produto.txt"
 
 # Encodings comuns em arquivos gerados no Windows
 ENCODINGS = (
@@ -348,6 +350,18 @@ def atender_terminal(
     endereco
 ):
     ip = endereco[0]
+
+    conexao_anterior = connection_manager.register(
+        ip,
+        cliente
+    )
+
+    if conexao_anterior:
+
+        log(
+            f"Nova sessao assumiu o terminal: {ip}"
+        )
+
     porta_remota = endereco[1]
 
     log(
@@ -487,22 +501,56 @@ def atender_terminal(
             f"{ip} abortou a conexao."
         )
 
+    except OSError as erro:
+
+        if getattr(erro, "winerror", None) == 10038:
+
+            log(
+                f"Sessao antiga encerrada: {ip}"
+            )
+
+        else:
+
+            log(
+                f"ERRO no terminal {ip}: "
+                f"{erro}"
+            )
+
+
     except Exception as erro:
+
         log(
             f"ERRO no terminal {ip}: "
             f"{erro}"
         )
 
     finally:
+
+        conexao = connection_manager.remove(
+            ip,
+            cliente
+        )
+
         try:
             cliente.close()
+
         except Exception:
             pass
 
-        log(
-            f"Conexao encerrada: {ip}"
-        )
 
+        if conexao:
+
+            log(
+                f"Conexao encerrada: {ip} "
+                f"| Tempo conectado: "
+                f"{conexao['duration']}"
+            )
+
+        else:
+
+            log(
+                f"Conexao ignorada (sessao substituida): {ip}"
+            )
 
 # ============================================================
 # MONITOR DO TXT
@@ -521,9 +569,26 @@ def monitorar_catalogo():
         try:
             carregar_produtos()
 
+        except OSError as erro:
+
+            if getattr(erro, "winerror", None) == 10038:
+
+                log(
+                    f"Conexao substituida por nova sessao: {ip}"
+                )
+
+            else:
+
+                log(
+                    f"ERRO no terminal {ip}: "
+                    f"{erro}"
+                )
+
+
         except Exception as erro:
+
             log(
-                f"Erro no monitor do catalogo: "
+                f"ERRO no terminal {ip}: "
                 f"{erro}"
             )
 
