@@ -1,11 +1,16 @@
 import socket
 import threading
 import os
+import sys
 import time
 import unicodedata
 
 from pathlib import Path
 from datetime import datetime
+from connection_manager import ConnectionManager
+
+connection_manager = ConnectionManager()
+
 
 
 # ============================================================
@@ -15,10 +20,26 @@ from datetime import datetime
 HOST = "0.0.0.0"
 PORTA = 6502
 
-# Caminho do arquivo gerado pelo sistema
-ARQUIVO_PRODUTOS = Path(
-    r"C:\tcserver\Produto.txt"
-)
+def obter_diretorio_aplicacao():
+    """
+    Retorna o diretorio real da aplicacao.
+
+    - Em desenvolvimento: pasta onde esta tcserver.py
+    - Empacotado em .exe: pasta onde esta o executavel
+
+    Isso garante que Produto.txt seja procurado sempre ao lado
+    da aplicacao, independentemente do diretorio atual do terminal.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    return Path(__file__).resolve().parent
+
+
+DIRETORIO_APLICACAO = obter_diretorio_aplicacao()
+
+# Produto.txt deve ficar sempre ao lado do script/executavel.
+ARQUIVO_PRODUTOS = DIRETORIO_APLICACAO / "Produto.txt"
 
 # Encodings comuns em arquivos gerados no Windows
 ENCODINGS = (
@@ -35,6 +56,7 @@ ENCODINGS = (
 produtos = {}
 
 arquivo_mtime = None
+ultimo_erro_catalogo = None
 
 lock_produtos = threading.Lock()
 
@@ -96,6 +118,7 @@ def carregar_produtos(forcar=False):
 
     global produtos
     global arquivo_mtime
+    global ultimo_erro_catalogo
 
     try:
         mtime_atual = os.path.getmtime(
@@ -160,6 +183,8 @@ def carregar_produtos(forcar=False):
 
             arquivo_mtime = mtime_atual
 
+        ultimo_erro_catalogo = None
+
         log(
             f"Catalogo atualizado: "
             f"{len(novo_catalogo)} produtos."
@@ -178,22 +203,31 @@ def carregar_produtos(forcar=False):
             )
 
     except FileNotFoundError:
-        log(
-            f"ERRO: arquivo nao encontrado: "
+        erro_atual = (
+            f"Arquivo de produtos nao encontrado: "
             f"{ARQUIVO_PRODUTOS}"
         )
+
+        if ultimo_erro_catalogo != erro_atual:
+            log(f"ERRO: {erro_atual}")
+            ultimo_erro_catalogo = erro_atual
 
     except PermissionError:
-        log(
-            f"ERRO: sem permissao para ler: "
+        erro_atual = (
+            f"Sem permissao para ler o arquivo: "
             f"{ARQUIVO_PRODUTOS}"
         )
 
+        if ultimo_erro_catalogo != erro_atual:
+            log(f"ERRO: {erro_atual}")
+            ultimo_erro_catalogo = erro_atual
+
     except Exception as erro:
-        log(
-            f"ERRO ao carregar catalogo: "
-            f"{erro}"
-        )
+        erro_atual = f"Erro ao carregar catalogo: {erro}"
+
+        if ultimo_erro_catalogo != erro_atual:
+            log(f"ERRO: {erro_atual}")
+            ultimo_erro_catalogo = erro_atual
 
 
 def buscar_produto(codigo):
@@ -350,9 +384,27 @@ def atender_terminal(
     ip = endereco[0]
     porta_remota = endereco[1]
 
+    conexao_anterior = connection_manager.register(
+        ip,
+        cliente
+    )
+
+    if conexao_anterior:
+
+        porta_anterior = conexao_anterior.get(
+            "remote_port",
+            "desconhecida"
+        )
+
+        log(
+            f"Nova sessao assumiu terminal {ip} "
+            f"| porta anterior: {porta_anterior} "
+            f"| porta nova: {porta_remota}"
+        )
+
     log(
-        f"TC506E conectado: "
-        f"{ip}:{porta_remota}"
+        f"Conexoes ativas: "
+        f"{connection_manager.count()}"
     )
 
     try:
@@ -487,22 +539,61 @@ def atender_terminal(
             f"{ip} abortou a conexao."
         )
 
+    except OSError as erro:
+
+        if getattr(erro, "winerror", None) == 10038:
+
+            log(
+                f"Sessao antiga encerrada: {ip}"
+            )
+
+        else:
+
+            log(
+                f"ERRO no terminal {ip}: "
+                f"{erro}"
+            )
+
+
     except Exception as erro:
+
         log(
             f"ERRO no terminal {ip}: "
             f"{erro}"
         )
 
     finally:
+
+        conexao = connection_manager.remove(
+            ip,
+            cliente
+        )
+
         try:
             cliente.close()
+
         except Exception:
             pass
 
-        log(
-            f"Conexao encerrada: {ip}"
-        )
 
+        if conexao:
+
+            log(
+                f"Conexao encerrada: {ip} "
+                f"| Tempo conectado: "
+                f"{conexao['duration']}"
+            )
+
+        else:
+
+            log(
+                f"Conexao ignorada (sessao substituida): {ip}"
+            )
+            
+            log(
+                f"Conexoes ativas: "
+                f"{connection_manager.count()}"
+            )
 
 # ============================================================
 # MONITOR DO TXT
@@ -521,9 +612,15 @@ def monitorar_catalogo():
         try:
             carregar_produtos()
 
-        except Exception as erro:
+        except OSError as erro:
             log(
                 f"Erro no monitor do catalogo: "
+                f"{erro}"
+            )
+
+        except Exception as erro:
+            log(
+                f"Erro inesperado no monitor do catalogo: "
                 f"{erro}"
             )
 
@@ -541,6 +638,11 @@ def iniciar_servidor():
         " GERTEC TC506E - SERVIDOR DE PRECOS"
     )
     print("=" * 60)
+
+    print(
+        f"Aplicacao      : "
+        f"{DIRETORIO_APLICACAO}"
+    )
 
     print(
         f"Arquivo Python : "
@@ -583,14 +685,27 @@ def iniciar_servidor():
         1
     )
 
-    servidor.bind(
-        (
-            HOST,
-            PORTA
+    try:
+        servidor.bind(
+            (
+                HOST,
+                PORTA
+            )
         )
-    )
 
-    servidor.listen(20)
+        servidor.listen(20)
+
+    except OSError as erro:
+        try:
+            servidor.close()
+        except Exception:
+            pass
+
+        log(
+            f"ERRO ao iniciar servidor em "
+            f"{HOST}:{PORTA}: {erro}"
+        )
+        raise
 
     log(
         f"Servidor ativo em "
