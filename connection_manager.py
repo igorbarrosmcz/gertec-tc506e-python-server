@@ -13,12 +13,12 @@ class ConnectionManager:
 
     def register(self, ip, client_socket):
         """
-        Registra nova conexão.
+        Registra nova conexao.
 
-        Caso exista uma conexão ativa para o mesmo IP,
+        Caso exista uma conexao ativa para o mesmo IP,
         encerra a anterior.
 
-        Retorna a conexão antiga.
+        Retorna a conexao antiga.
         """
 
         old_connection = None
@@ -30,6 +30,15 @@ class ConnectionManager:
                 old_connection = self.connections[ip]
 
                 try:
+                    endereco_remoto = old_connection["socket"].getpeername()
+
+                    old_connection["remote_ip"] = endereco_remoto[0]
+                    old_connection["remote_port"] = endereco_remoto[1]
+
+                except OSError:
+                    pass
+
+                try:
                     old_connection["socket"].shutdown(
                         socket.SHUT_RDWR
                     )
@@ -37,19 +46,16 @@ class ConnectionManager:
                 except Exception:
                     pass
 
-
                 try:
                     old_connection["socket"].close()
 
                 except Exception:
                     pass
 
-
             self.connections[ip] = {
                 "socket": client_socket,
                 "connected_at": datetime.now()
             }
-
 
         return old_connection
 
